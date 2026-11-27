@@ -36,7 +36,7 @@ fn main() {
         .or_else(|_| std::env::var("VERTIGO_CLIENT_UKEY"))
         .unwrap_or_default();
     let mut connect_token: Option<Vec<u8>> = None;
-    let mut api_origin = RaveEngineLib::common::net::api::API_BASE_URL.to_string();
+    let mut api_origin = RaveEngineLib::common::net::api::api_base();
     let mut launch_code = String::new();
     let mut netcode_key_cli: Option<String> = None;
     let mut protocol_id_cli: Option<u64> = None;
