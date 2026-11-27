@@ -8,6 +8,10 @@ pub struct ClientJoinInfo {
     pub ip: IpAddr,
     pub port: u16,
     pub ukey: String,
+    pub connect_token: String,
+    pub code: String,
+    pub api_base: String,
+    pub expires_at: Option<u64>,
 }
 
 pub fn build_client_join_uri(host: &str, port: u16, ukey: &str) -> String {
@@ -43,13 +47,17 @@ pub fn parse_client_join_uri(raw: &str) -> Option<ClientJoinInfo> {
     }
     let host = query_param(query, "ip").or_else(|| query_param(query, "host"))?;
     let port_str = query_param(query, "port")?;
-    let ukey = query_param(query, "ukey")?;
-    if host.is_empty() || ukey.is_empty() {
+    let ukey = query_param(query, "ukey").unwrap_or_default();
+    let connect_token = query_param(query, "connect_token").unwrap_or_default();
+    let code = query_param(query, "code").unwrap_or_default();
+    let api_base = query_param(query, "api").unwrap_or_default();
+    let expires_at = query_param(query, "expires_at").and_then(|v| v.parse::<u64>().ok());
+    if host.is_empty() || (ukey.is_empty() && (connect_token.is_empty() || code.is_empty())) {
         return None;
     }
     let port: u16 = port_str.parse().ok()?;
     let ip: IpAddr = host.parse().or_else(|_| resolve_host(&host, port)).ok()?;
-    Some(ClientJoinInfo { ip, port, ukey })
+    Some(ClientJoinInfo { ip, port, ukey, connect_token, code, api_base, expires_at })
 }
 
 pub fn extract_client_join_from_args(args: &[String]) -> Option<ClientJoinInfo> {
