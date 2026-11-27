@@ -177,8 +177,7 @@ pub fn trigger_delayed_connect(
         for entity in &client_query {
             commands.trigger(Connect { entity });
             info!(
-                "CLIENT_CONNECT: Handshake connection triggered after rendering warmup with ukey: {}",
-                ukey.0
+                "CLIENT_CONNECT: Handshake connection triggered after rendering warmup with authenticated credentials"
             );
         }
         *connected = true;
