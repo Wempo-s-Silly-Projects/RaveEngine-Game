@@ -97,6 +97,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn decode_connect_token_requires_exactly_2048_bytes() {
+        use base64::Engine as _;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(vec![0u8; 2048]);
+        assert_eq!(decode_connect_token(&encoded).unwrap().len(), 2048);
+        assert!(decode_connect_token("not-base64").is_err());
+        let short = base64::engine::general_purpose::STANDARD.encode(vec![0u8; 16]);
+        assert!(decode_connect_token(&short).is_err());
+    }
+
+    #[test]
     fn api_base_prefers_vertexia_domain_and_keeps_legacy_alias() {
         let previous_vertexia = std::env::var("VERTEXIA_API_DOMAIN").ok();
         let previous_vertigo = std::env::var("VERTIGO_API_DOMAIN").ok();
