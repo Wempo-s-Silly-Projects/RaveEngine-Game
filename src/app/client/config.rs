@@ -4,6 +4,7 @@ pub struct ClientAppConfig {
     pub ip: IpAddr,
     pub port: u16,
     pub ukey: String,
+    pub connect_token: Option<Vec<u8>>,
     pub netcode_key: Option<[u8; 32]>,
     pub protocol_id: Option<u64>,
 }
@@ -13,10 +14,13 @@ impl ClientAppConfig {
         let mut ip = IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1));
         let mut port = 5000;
         let mut ukey = "".to_string();
+        let mut connect_token: Option<Vec<u8>> = None;
+        let mut launch_code = String::new();
+        let mut api_origin = crate::common::net::api::api_base();
         let mut netcode_key_cli: Option<String> = None;
         let mut protocol_id_cli: Option<u64> = None;
 
-        if let Ok(env_ukey) = std::env::var("VERTIGO_CLIENT_UKEY") {
+        if let Ok(env_ukey) = std::env::var("VERTEXIA_CLIENT_TOKEN").or_else(|_| std::env::var("VERTIGO_CLIENT_UKEY")) {
             ukey = env_ukey;
         }
         if let Ok(ip_str) = std::env::var("VERTIGO_SERVER_IP") {
@@ -35,7 +39,18 @@ impl ClientAppConfig {
             if let Some(join) = crate::client::uri::parse_client_join_uri(&args[i]) {
                 ip = join.ip;
                 port = join.port;
-                ukey = join.ukey;
+                if !join.ukey.is_empty() { ukey = join.ukey; }
+                if !join.connect_token.is_empty() {
+                    connect_token = Some(
+                        crate::common::net::api::decode_connect_token(&join.connect_token)
+                            .unwrap_or_else(|err| {
+                                eprintln!("Invalid VERTEXIA connect token: {err}");
+                                std::process::exit(1);
+                            }),
+                    );
+                }
+                launch_code = join.code;
+                if !join.api_base.is_empty() { api_origin = join.api_base; }
             }
             if args[i] == "--port" && i + 1 < args.len() {
                 if let Ok(p) = args[i + 1].parse::<u16>() {
@@ -60,6 +75,15 @@ impl ClientAppConfig {
             }
         }
 
+        if !launch_code.is_empty() {
+            unsafe { std::env::set_var("VERTEXIA_API_DOMAIN", &api_origin); }
+            ukey = crate::common::net::api::exchange_client_code(&api_origin, &launch_code)
+                .unwrap_or_else(|err| {
+                    eprintln!("{err}");
+                    std::process::exit(1);
+                });
+        }
+
         let netcode_key = netcode_key_cli
             .as_deref()
             .and_then(crate::common::net::netcode::parse_hex_key)
@@ -79,6 +103,7 @@ impl ClientAppConfig {
             ip,
             port,
             ukey,
+            connect_token,
             netcode_key,
             protocol_id,
         }

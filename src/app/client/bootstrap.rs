@@ -42,6 +42,7 @@ impl RaveClientApp {
         app.insert_resource(ClientConnectSettings {
             ip: self.config.ip,
             port: self.config.port,
+            connect_token: self.config.connect_token,
             netcode_key: self.config.netcode_key,
             protocol_id: self.config.protocol_id,
         });

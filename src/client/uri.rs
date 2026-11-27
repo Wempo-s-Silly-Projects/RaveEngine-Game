@@ -8,6 +8,10 @@ pub struct ClientJoinInfo {
     pub ip: IpAddr,
     pub port: u16,
     pub ukey: String,
+    pub connect_token: String,
+    pub code: String,
+    pub api_base: String,
+    pub expires_at: Option<u64>,
 }
 
 pub fn build_client_join_uri(host: &str, port: u16, ukey: &str) -> String {
@@ -43,13 +47,17 @@ pub fn parse_client_join_uri(raw: &str) -> Option<ClientJoinInfo> {
     }
     let host = query_param(query, "ip").or_else(|| query_param(query, "host"))?;
     let port_str = query_param(query, "port")?;
-    let ukey = query_param(query, "ukey")?;
-    if host.is_empty() || ukey.is_empty() {
+    let ukey = query_param(query, "ukey").unwrap_or_default();
+    let connect_token = query_param(query, "connect_token").unwrap_or_default();
+    let code = query_param(query, "code").unwrap_or_default();
+    let api_base = query_param(query, "api").unwrap_or_default();
+    let expires_at = query_param(query, "expires_at").and_then(|v| v.parse::<u64>().ok());
+    if host.is_empty() || (ukey.is_empty() && (connect_token.is_empty() || code.is_empty())) {
         return None;
     }
     let port: u16 = port_str.parse().ok()?;
     let ip: IpAddr = host.parse().or_else(|_| resolve_host(&host, port)).ok()?;
-    Some(ClientJoinInfo { ip, port, ukey })
+    Some(ClientJoinInfo { ip, port, ukey, connect_token, code, api_base, expires_at })
 }
 
 pub fn extract_client_join_from_args(args: &[String]) -> Option<ClientJoinInfo> {
@@ -136,6 +144,26 @@ fn uri_decode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_backend_connect_ticket_and_auth_code() {
+        let info = parse_client_join_uri(
+            "vertexia-client://play?ip=127.0.0.1&port=5100&connect_token=YWJj&code=one-time&api=https%3A%2F%2Fvertexia.wempos-forum.com&expires_at=1700000000",
+        ).unwrap();
+        assert_eq!(info.port, 5100);
+        assert_eq!(info.connect_token, "YWJj");
+        assert_eq!(info.code, "one-time");
+        assert_eq!(info.api_base, "https://vertexia.wempos-forum.com");
+        assert_eq!(info.expires_at, Some(1700000000));
+        assert!(info.ukey.is_empty());
+    }
+
+    #[test]
+    fn rejects_connect_ticket_without_one_time_code() {
+        assert!(parse_client_join_uri(
+            "vertexia-client://play?ip=127.0.0.1&port=5100&connect_token=YWJj"
+        ).is_none());
+    }
 
     #[test]
     fn parses_client_play_uri() {

@@ -4,11 +4,9 @@
 
 Welcome to the RaveEngine project, a full rewrite of the previous client built in Godot to transition to Rust. RaveEngine is an engine built with Bevy, a code-only game engine that allows us to skip the boring low-level part and get straight to what's important: the studio, the client and the server.
 
-With Rust, we are able to build things we previously considered impossible or too hard with Godot. Many Godot features limited us for what we actually wanted with VERTEXIA. So, with the VERTIGO project (a rewrite of the website to Go), we thought, "why not rewrite the client too?". After all, it was getting hard to move around the client source code: it was as much of a mess as you think it was.
+With Rust, we are able to build things we previously considered impossible or too hard with Godot. Many of Godot features limited us for what we actually wanted with VERTEXIA. So, with the VERTIGO project (a rewrite of the website to Go), we thought, "why not rewrite the client too?" After all, it was getting hard to move around the client source code: it was as much of a mess as you think it was.
 
 ## Building
-
-Building and running RaveEngine is fairly easy.
 
 Head to the Rust website to install Rust and its tools:
 
@@ -18,9 +16,22 @@ Clone our repo, run `cargo build` (`cargo build` builds as debug, which is faste
 
 You can now launch the executable!
 
+## Connecting to VERTEXIA
+
+RaveEngine uses `https://vertexia.wempos-forum.com` as its default HTTP API and Studio authentication origin.
+
+To override the API origin for development or self-hosting, set `VERTEXIA_API_DOMAIN` to the complete HTTP(S) origin, without a trailing path, for example:
+
+```sh
+VERTEXIA_API_DOMAIN=https://vertexia.wempos-forum.com
+```
+
+The older `VERTIGO_API_DOMAIN` environment variable remains supported as a compatibility fallback. `VERTEXIA_API_DOMAIN` takes precedence when both are set.
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for the platform and multiplayer networking requirements.
+
 ## AI assistance disclosure
 
-If I were to rate this on a scale of 1-5 where "1" is the least vibecoded and "5" is the most vibecoded, I'd say 2/2.5. I mostly used it for tests and debugging, as well as some visual things I couldn't figure. This sped up development considerably, and helped me find numerous amount of bottlenecks and bugs in my code. 
+If I were to rate this on a scale of 1-5 where "1" is the least vibecoded and "5" is the most vibecoded, I'd say 2/2.5. I mostly used it for tests and debugging, as well as some visual things I couldn't figure. This sped up development considerably, and helped me find numerous amount of bottlenecks and bugs in my code.
 
 Though, our stance on AI is clear: all forms of AI are not allowed in our platform: one thing is using it as a tool to help and speed up development, the other is to steal a writer's job, or an artist, or a photographer.
-

@@ -20,7 +20,9 @@ pub fn validate_user_ukey(
         });
     }
 
-    let base = crate::common::net::api::api_base();
+    let base = crate::common::net::api::validate_api_origin(
+        &crate::common::net::api::api_base(),
+    )?;
     let api_key = crate::common::net::api::gameserver_api_key()?;
 
     bevy::log::trace!(
@@ -35,7 +37,7 @@ pub fn validate_user_ukey(
 
     let resp = client
         .get(&url)
-        .query(&[("ukey", ukey)])
+        .bearer_auth(ukey)
         .header("X-Gameserver-Key", api_key)
         .send()
         .map_err(|e| format!("auth request failed: {e}"))?;
