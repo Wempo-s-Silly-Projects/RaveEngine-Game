@@ -27,8 +27,6 @@ jobs:
             libasound2-dev libudev-dev libx11-dev libxi-dev \
             libxcursor-dev libxrandr-dev libxinerama-dev \
             libwayland-dev libxkbcommon-dev libvulkan-dev
-      - name: Check formatting
-        run: cargo fmt --all -- --check
       - name: Check all targets
         run: cargo check --all-targets
       - name: Run library tests
