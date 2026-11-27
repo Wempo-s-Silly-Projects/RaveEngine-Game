@@ -20,7 +20,9 @@ pub fn validate_user_ukey(
         });
     }
 
-    let base = crate::common::net::api::api_base();
+    let base = crate::common::net::api::validate_api_origin(
+        &crate::common::net::api::api_base(),
+    )?;
     let api_key = crate::common::net::api::gameserver_api_key()?;
 
     bevy::log::trace!(
