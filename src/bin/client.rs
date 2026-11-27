@@ -82,8 +82,8 @@ fn main() {
         .and_then(RaveEngineLib::common::net::netcode::parse_hex_key)
         .or_else(|| std::env::var("NETCODE_PRIVATE_KEY").ok().as_deref().and_then(RaveEngineLib::common::net::netcode::parse_hex_key));
     let protocol_id = protocol_id_cli.or_else(|| std::env::var("NETCODE_PROTOCOL_ID").ok().and_then(|v| v.trim().parse::<u64>().ok()));
-    if connect_token.is_none() && netcode_key.is_none() {
-        eprintln!("No connect token or explicit development Netcode key was provided.");
+    if connect_token.is_none() && (netcode_key.is_none() || protocol_id.is_none()) {
+        eprintln!("No connect token or complete explicit development Netcode configuration was provided.");
         std::process::exit(1);
     }
 
