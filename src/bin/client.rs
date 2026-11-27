@@ -9,8 +9,9 @@ use lightyear::prelude::*;
 struct ClientConnectSettings {
     ip: std::net::IpAddr,
     port: u16,
-    netcode_key: [u8; 32],
-    protocol_id: u64,
+    connect_token: Option<Vec<u8>>,
+    netcode_key: Option<[u8; 32]>,
+    protocol_id: Option<u64>,
 }
 
 #[bevy_main]
@@ -31,7 +32,12 @@ fn main() {
 
     let mut ip = std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1));
     let mut port = 5000;
-    let mut ukey = "".to_string();
+    let mut ukey = std::env::var("VERTEXIA_CLIENT_TOKEN")
+        .or_else(|_| std::env::var("VERTIGO_CLIENT_UKEY"))
+        .unwrap_or_default();
+    let mut connect_token: Option<Vec<u8>> = None;
+    let mut api_origin = RaveEngineLib::common::net::api::API_BASE_URL.to_string();
+    let mut launch_code = String::new();
     let mut netcode_key_cli: Option<String> = None;
     let mut protocol_id_cli: Option<u64> = None;
 
@@ -40,39 +46,46 @@ fn main() {
         if let Some(join) = RaveEngineLib::client::uri::parse_client_join_uri(&args[i]) {
             ip = join.ip;
             port = join.port;
-            ukey = join.ukey;
+            if !join.ukey.is_empty() { ukey = join.ukey; }
+            if !join.connect_token.is_empty() { connect_token = Some(RaveEngineLib::common::net::api::decode_connect_token(&join.connect_token).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(1); })); }
+            if !join.code.is_empty() { launch_code = join.code; }
+            if !join.api_base.is_empty() { api_origin = join.api_base; }
         }
         if args[i] == "--no-clouds" || args[i] == "--disable-clouds" {
-            unsafe {
-                std::env::set_var("VERTIGO_NO_CLOUDS", "1");
-            }
+            unsafe { std::env::set_var("VERTIGO_NO_CLOUDS", "1"); }
         }
         if args[i] == "--port" && i + 1 < args.len() {
-            if let Ok(p) = args[i + 1].parse::<u16>() {
-                port = p;
-            }
+            if let Ok(p) = args[i + 1].parse::<u16>() { port = p; }
         }
         if args[i] == "--ip" && i + 1 < args.len() {
-            if let Ok(ip_addr) = args[i + 1].parse::<std::net::IpAddr>() {
-                ip = ip_addr;
-            }
+            if let Ok(ip_addr) = args[i + 1].parse::<std::net::IpAddr>() { ip = ip_addr; }
         }
-        if args[i] == "--ukey" && i + 1 < args.len() {
-            ukey = args[i + 1].clone();
-        }
-        if args[i] == "--netcode-key" && i + 1 < args.len() {
-            netcode_key_cli = Some(args[i + 1].clone());
-        }
+        if args[i] == "--ukey" && i + 1 < args.len() { ukey = args[i + 1].clone(); }
+        if args[i] == "--netcode-key" && i + 1 < args.len() { netcode_key_cli = Some(args[i + 1].clone()); }
         if args[i] == "--protocol-id" && i + 1 < args.len() {
-            if let Ok(id) = args[i + 1].parse::<u64>() {
-                protocol_id_cli = Some(id);
-            }
+            if let Ok(id) = args[i + 1].parse::<u64>() { protocol_id_cli = Some(id); }
         }
     }
 
-    let netcode_key =
-        RaveEngineLib::common::net::netcode::netcode_private_key(netcode_key_cli.as_deref());
-    let protocol_id = RaveEngineLib::common::net::netcode::netcode_protocol_id(protocol_id_cli);
+    if !launch_code.is_empty() {
+        unsafe { std::env::set_var("VERTEXIA_API_DOMAIN", &api_origin); }
+        ukey = RaveEngineLib::common::net::api::exchange_client_code(&api_origin, &launch_code)
+            .unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(1); });
+    }
+    if ukey.is_empty() {
+        eprintln!("No VERTEXIA client authorization token was provided. Launch the game from the VERTEXIA website.");
+        std::process::exit(1);
+    }
+
+    let netcode_key = netcode_key_cli
+        .as_deref()
+        .and_then(RaveEngineLib::common::net::netcode::parse_hex_key)
+        .or_else(|| std::env::var("NETCODE_PRIVATE_KEY").ok().as_deref().and_then(RaveEngineLib::common::net::netcode::parse_hex_key));
+    let protocol_id = protocol_id_cli.or_else(|| std::env::var("NETCODE_PROTOCOL_ID").ok().and_then(|v| v.trim().parse::<u64>().ok()));
+    if connect_token.is_none() && netcode_key.is_none() {
+        eprintln!("No connect token or explicit development Netcode key was provided.");
+        std::process::exit(1);
+    }
 
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(LogPlugin {
@@ -91,6 +104,7 @@ fn main() {
     app.insert_resource(ClientConnectSettings {
         ip,
         port,
+        connect_token,
         netcode_key,
         protocol_id,
     });
@@ -114,14 +128,20 @@ fn setup_client(mut commands: Commands, settings: Res<ClientConnectSettings>) {
 
     commands.insert_resource(RaveEngineLib::client::LocalClientId(client_id));
 
-    let private_key = settings.netcode_key;
-    let protocol_id = settings.protocol_id;
-
-    let auth = Authentication::Manual {
-        server_addr,
-        client_id,
-        private_key,
-        protocol_id,
+    let auth = if let Some(bytes) = settings.connect_token.as_deref() {
+        match lightyear::netcode::ConnectToken::try_from_bytes(bytes) {
+            Ok(token) => Authentication::Token(token),
+            Err(err) => {
+                error!("Invalid VERTEXIA connect token: {err}");
+                return;
+            }
+        }
+    } else if let (Some(private_key), Some(protocol_id)) = (settings.netcode_key, settings.protocol_id) {
+        warn!("Using manual Netcode authentication. This is for local development only.");
+        Authentication::Manual { server_addr, client_id, private_key, protocol_id }
+    } else {
+        error!("No valid connect token was provided.");
+        return;
     };
 
     let netcode_config = NetcodeConfig {
