@@ -57,8 +57,16 @@ pub fn poll_launch_details(
     {
         if let Ok(info) = serde_json::from_str::<LaunchInfo>(&file_content) {
             if let Ok(parsed_ip) = info.ip.parse::<IpAddr>() {
-                let connect_token = info.connect_token.as_deref()
-                    .and_then(|value| crate::common::net::api::decode_connect_token(value).ok());
+                let connect_token = match info.connect_token.as_deref() {
+                    Some(value) => match crate::common::net::api::decode_connect_token(value) {
+                        Ok(token) => Some(token),
+                        Err(err) => {
+                            error!("Invalid VERTEXIA connect token in launch_info.json: {err}");
+                            return;
+                        }
+                    },
+                    None => None,
+                };
                 let netcode_key = info.netcode_key.as_deref()
                     .and_then(crate::common::net::netcode::parse_hex_key);
                 let mut access_token = info.ukey;
@@ -66,7 +74,13 @@ pub fn poll_launch_details(
                     let api = info.api.as_deref().filter(|value| !value.is_empty())
                         .unwrap_or(crate::common::net::api::API_BASE_URL);
                     unsafe { std::env::set_var("VERTEXIA_API_DOMAIN", api); }
-                    access_token = crate::common::net::api::exchange_client_code(api, code).unwrap_or_default();
+                    access_token = match crate::common::net::api::exchange_client_code(api, code) {
+                        Ok(token) => token,
+                        Err(err) => {
+                            error!("VERTEXIA client authorization exchange failed: {err}");
+                            return;
+                        }
+                    };
                 }
                 commands.insert_resource(crate::client::ClientUkey(access_token));
                 if let Some(ref mut s) = settings {
