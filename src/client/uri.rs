@@ -3,31 +3,59 @@ use std::net::IpAddr;
 pub const CLIENT_URI_SCHEME: &str = "vertexia-client";
 pub const CLIENT_URI_FALLBACK_SCHEME: &str = "vertexia";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Legacy direct-connect link (`?ip=&port=&ukey=`). Only honoured with `--dev-legacy-connect`.
+#[derive(Clone, PartialEq, Eq)]
 pub struct ClientJoinInfo {
     pub ip: IpAddr,
     pub port: u16,
     pub ukey: String,
 }
 
-pub fn build_client_join_uri(host: &str, port: u16, ukey: &str) -> String {
-    format!(
-        "{}://play?ip={}&port={}&ukey={}",
-        CLIENT_URI_SCHEME,
-        uri_encode(host),
-        port,
-        uri_encode(ukey)
-    )
+impl std::fmt::Debug for ClientJoinInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientJoinInfo")
+            .field("ip", &self.ip)
+            .field("port", &self.port)
+            .field("ukey", &"<redacted>")
+            .finish()
+    }
 }
 
-pub fn parse_client_join_uri(raw: &str) -> Option<ClientJoinInfo> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientLaunchUri {
+    /// `vertexia-client://play?game=<id>` or `vertexia://join?game_id=<id>`.
+    Game(u64),
+    Legacy(ClientJoinInfo),
+}
+
+/// Link the website uses to open a game in the client.
+pub fn build_client_join_uri(game_id: u64) -> String {
+    format!("{CLIENT_URI_SCHEME}://play?game={game_id}")
+}
+
+pub fn parse_client_launch_uri(raw: &str) -> Option<ClientLaunchUri> {
+    let query = launch_query(raw)?;
+    if let Some(id) = query_param(query, "game").or_else(|| query_param(query, "game_id")) {
+        return id
+            .trim()
+            .parse::<u64>()
+            .ok()
+            .filter(|id| *id > 0)
+            .map(ClientLaunchUri::Game);
+    }
+    parse_legacy_join(query).map(ClientLaunchUri::Legacy)
+}
+
+pub fn extract_client_launch_from_args(args: &[String]) -> Option<ClientLaunchUri> {
+    args.iter().skip(1).find_map(|a| parse_client_launch_uri(a))
+}
+
+/// Returns the query string of a `play`/`join` link in either client scheme.
+fn launch_query(raw: &str) -> Option<&str> {
     let arg = raw
         .trim()
         .trim_matches(|c| c == '"' || c == '\'')
         .trim();
-    if arg.is_empty() {
-        return None;
-    }
     let lower = arg.to_lowercase();
     let rest = if lower.starts_with(&format!("{CLIENT_URI_SCHEME}://")) {
         &arg[CLIENT_URI_SCHEME.len() + 3..]
@@ -38,9 +66,10 @@ pub fn parse_client_join_uri(raw: &str) -> Option<ClientJoinInfo> {
     };
     let (path, query) = rest.split_once('?')?;
     let action = path.trim().trim_matches('/').to_lowercase();
-    if action != "play" && action != "join" {
-        return None;
-    }
+    (action == "play" || action == "join").then_some(query)
+}
+
+fn parse_legacy_join(query: &str) -> Option<ClientJoinInfo> {
     let host = query_param(query, "ip").or_else(|| query_param(query, "host"))?;
     let port_str = query_param(query, "port")?;
     let ukey = query_param(query, "ukey")?;
@@ -50,10 +79,6 @@ pub fn parse_client_join_uri(raw: &str) -> Option<ClientJoinInfo> {
     let port: u16 = port_str.parse().ok()?;
     let ip: IpAddr = host.parse().or_else(|_| resolve_host(&host, port)).ok()?;
     Some(ClientJoinInfo { ip, port, ukey })
-}
-
-pub fn extract_client_join_from_args(args: &[String]) -> Option<ClientJoinInfo> {
-    args.iter().skip(1).find_map(|a| parse_client_join_uri(a))
 }
 
 #[cfg(target_os = "windows")]
@@ -137,86 +162,88 @@ fn uri_decode(s: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn parses_client_play_uri() {
-        let info = parse_client_join_uri(
-            "vertexia-client://play?ip=127.0.0.1&port=5000&ukey=abc123",
-        )
-        .unwrap();
-        assert_eq!(info.ip.to_string(), "127.0.0.1");
-        assert_eq!(info.port, 5000);
-        assert_eq!(info.ukey, "abc123");
+    fn legacy(raw: &str) -> ClientJoinInfo {
+        match parse_client_launch_uri(raw) {
+            Some(ClientLaunchUri::Legacy(info)) => info,
+            other => panic!("expected legacy join, got {other:?}"),
+        }
     }
 
     #[test]
-    fn parses_quoted_uri_from_registry() {
-        let info = parse_client_join_uri(
-            "\"vertexia-client://play?ip=127.0.0.1&port=5000&ukey=abc123\"",
-        )
-        .unwrap();
-        assert_eq!(info.port, 5000);
-        assert_eq!(info.ukey, "abc123");
-    }
-
-    #[test]
-    fn accepts_join_action_and_fallback_scheme() {
-        let info = parse_client_join_uri("vertexia://join?ip=10.0.0.2&port=6000&ukey=k1")
-            .unwrap();
-        assert_eq!(info.ip.to_string(), "10.0.0.2");
-        assert_eq!(info.port, 6000);
-    }
-
-    #[test]
-    fn rejects_studio_auth_uris() {
-        assert!(parse_client_join_uri("vertexia-studio://auth?code=abc&state=xyz").is_none());
-        assert!(parse_client_join_uri("vertexia://auth?code=abc").is_none());
-        assert!(parse_client_join_uri("vertexia-client://auth?code=abc").is_none());
-    }
-
-    #[test]
-    fn rejects_incomplete_uris() {
-        assert!(parse_client_join_uri("vertexia-client://play?ip=127.0.0.1&port=5000").is_none());
-        assert!(
-            parse_client_join_uri("vertexia-client://play?port=5000&ukey=k").is_none()
+    fn parses_game_links() {
+        assert_eq!(
+            parse_client_launch_uri("vertexia-client://play?game=42"),
+            Some(ClientLaunchUri::Game(42))
         );
-        assert!(
-            parse_client_join_uri("vertexia-client://play?ip=999.1.1.1&port=5000&ukey=k")
-                .is_none()
+        assert_eq!(
+            parse_client_launch_uri("vertexia://join?game_id=7"),
+            Some(ClientLaunchUri::Game(7))
         );
-        assert!(
-            parse_client_join_uri("vertexia-client://play?ip=127.0.0.1&port=abc&ukey=k")
-                .is_none()
+        assert_eq!(
+            parse_client_launch_uri("\"vertexia-client://play/?game_id=9&utm=x\""),
+            Some(ClientLaunchUri::Game(9))
         );
-        assert!(parse_client_join_uri("https://example.com/play").is_none());
     }
 
     #[test]
-    fn extracts_join_from_arg_list() {
-        let args = vec![
-            "RaveEngineClient.exe".to_string(),
-            "vertexia-client://play?ip=127.0.0.1&port=5001&ukey=k2".to_string(),
-        ];
-        let info = extract_client_join_from_args(&args).unwrap();
-        assert_eq!(info.port, 5001);
-        assert_eq!(info.ukey, "k2");
-    }
-
-    #[test]
-    fn ignores_arg_list_without_uri() {
-        let args = vec![
-            "RaveEngineClient.exe".to_string(),
-            "--ip".to_string(),
-            "127.0.0.1".to_string(),
-        ];
-        assert!(extract_client_join_from_args(&args).is_none());
+    fn rejects_bad_game_ids() {
+        assert_eq!(parse_client_launch_uri("vertexia-client://play?game=0"), None);
+        assert_eq!(parse_client_launch_uri("vertexia-client://play?game=-1"), None);
+        assert_eq!(parse_client_launch_uri("vertexia-client://play?game=abc"), None);
+        // A bad game id must not fall through to the legacy form.
+        assert_eq!(
+            parse_client_launch_uri("vertexia-client://play?game=x&ip=127.0.0.1&port=1&ukey=k"),
+            None
+        );
     }
 
     #[test]
     fn build_parse_round_trip() {
-        let uri = build_client_join_uri("127.0.0.1", 5000, "abc123");
-        let info = parse_client_join_uri(&uri).unwrap();
+        assert_eq!(
+            parse_client_launch_uri(&build_client_join_uri(1234)),
+            Some(ClientLaunchUri::Game(1234))
+        );
+    }
+
+    #[test]
+    fn parses_legacy_play_uri() {
+        let info = legacy("vertexia-client://play?ip=127.0.0.1&port=5000&ukey=abc123");
         assert_eq!(info.ip.to_string(), "127.0.0.1");
         assert_eq!(info.port, 5000);
         assert_eq!(info.ukey, "abc123");
+        let info = legacy("vertexia://join?ip=10.0.0.2&port=6000&ukey=k1");
+        assert_eq!(info.ip.to_string(), "10.0.0.2");
+        assert!(!format!("{info:?}").contains("k1"));
+    }
+
+    #[test]
+    fn rejects_auth_and_incomplete_uris() {
+        for uri in [
+            "vertexia-studio://auth?code=abc&state=xyz",
+            "vertexia://auth?code=abc",
+            "vertexia-client://auth?code=abc",
+            "vertexia-client://play?ip=127.0.0.1&port=5000",
+            "vertexia-client://play?port=5000&ukey=k",
+            "vertexia-client://play?ip=999.1.1.1&port=5000&ukey=k",
+            "vertexia-client://play?ip=127.0.0.1&port=abc&ukey=k",
+            "vertexia-client://play",
+            "https://example.com/play?game=1",
+        ] {
+            assert_eq!(parse_client_launch_uri(uri), None, "{uri}");
+        }
+    }
+
+    #[test]
+    fn extracts_launch_from_arg_list() {
+        let args = vec![
+            "RaveEngineClient.exe".to_string(),
+            "vertexia-client://play?game=5".to_string(),
+        ];
+        assert_eq!(
+            extract_client_launch_from_args(&args),
+            Some(ClientLaunchUri::Game(5))
+        );
+        let args = vec!["RaveEngineClient.exe".to_string(), "--ip".to_string()];
+        assert_eq!(extract_client_launch_from_args(&args), None);
     }
 }

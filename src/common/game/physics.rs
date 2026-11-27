@@ -493,6 +493,8 @@ mod tests {
             netcode_key: [0u8; 32],
             protocol_id: 0,
             allow_unauthenticated: true,
+            legacy_ukey_auth: true,
+            server_id: None,
         }
     }
 

@@ -26,7 +26,7 @@ impl Plugin for StudioPlugin {
         app.init_resource::<auth::StudioAuthStore>()
             .init_resource::<auth::StudioAuthFlow>()
             .add_systems(Startup, auth::init_studio_auth)
-            .add_systems(Update, (auth::poll_studio_auth_flow, auth::check_uri_auth_on_update))
+            .add_systems(Update, auth::poll_studio_auth_flow)
             .init_state::<tools::ToolState>()
             .init_state::<tools::OnboardingState>()
             .init_resource::<tools::Selection>()

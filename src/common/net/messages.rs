@@ -24,6 +24,9 @@ pub struct KickMessage {
     pub reason: String,
 }
 
+/// Kick reason sent to every player when the dedicated server is shutting down.
+pub const SHUTDOWN_KICK_REASON: &str = "The server is shutting down.";
+
 #[derive(Message, Serialize, Deserialize, Debug, Clone)]
 pub struct AuthSuccessMessage {
     pub uid: i32,

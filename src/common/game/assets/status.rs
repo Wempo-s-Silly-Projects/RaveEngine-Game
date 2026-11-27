@@ -3,6 +3,8 @@ use std::time::Duration;
 
 use bevy::prelude::*;
 
+use crate::common::net::api::{UserAuth, try_asset_auth};
+
 const STATUS_WORKERS: usize = 2;
 const STATUS_QUEUE_CAP: usize = 128;
 
@@ -17,7 +19,7 @@ pub enum AssetStatus {
 }
 
 struct StatusWorkers {
-    tx: crossbeam_channel::Sender<(u32, Option<String>)>,
+    tx: crossbeam_channel::Sender<(u32, Option<UserAuth>)>,
     rx: std::sync::Mutex<
         crossbeam_channel::Receiver<(u32, Result<(AssetStatus, Option<i32>), String>)>,
     >,
@@ -26,7 +28,7 @@ struct StatusWorkers {
 impl StatusWorkers {
     fn start() -> Self {
         let (job_tx, job_rx) =
-            crossbeam_channel::bounded::<(u32, Option<String>)>(STATUS_QUEUE_CAP);
+            crossbeam_channel::bounded::<(u32, Option<UserAuth>)>(STATUS_QUEUE_CAP);
         let (res_tx, res_rx) =
             crossbeam_channel::bounded::<(u32, Result<(AssetStatus, Option<i32>), String>)>(
                 STATUS_QUEUE_CAP,
@@ -35,8 +37,8 @@ impl StatusWorkers {
             let job_rx = job_rx.clone();
             let res_tx = res_tx.clone();
             std::thread::spawn(move || {
-                while let Ok((asset_id, user_ukey)) = job_rx.recv() {
-                    let result = fetch_asset_status(asset_id, user_ukey.as_deref());
+                while let Ok((asset_id, user)) = job_rx.recv() {
+                    let result = fetch_asset_status(asset_id, user.as_ref());
                     let _ = res_tx.send((asset_id, result));
                 }
             });
@@ -50,21 +52,13 @@ impl StatusWorkers {
 
 fn fetch_asset_status(
     asset_id: u32,
-    user_ukey: Option<&str>,
+    user: Option<&UserAuth>,
 ) -> Result<(AssetStatus, Option<i32>), String> {
     let base = crate::common::net::api::api_base();
     let url = format!("{base}/api/v1/assets/{asset_id}/status");
     let client = crate::common::net::api::blocking_client(Duration::from_secs(10))?;
-    let mut req = client.get(&url);
-    if let Ok(api_key) = crate::common::net::api::gameserver_api_key() {
-        if !api_key.is_empty() {
-            req = req.header("X-Gameserver-Key", api_key);
-        } else if let Some(ukey) = user_ukey.filter(|s| !s.is_empty()) {
-            req = req.query(&[("ukey", ukey)]);
-        }
-    } else if let Some(ukey) = user_ukey.filter(|s| !s.is_empty()) {
-        req = req.query(&[("ukey", ukey)]);
-    }
+    // Status lookups have always gone out without credentials when none are available.
+    let (req, _) = try_asset_auth(client.get(&url), user);
     let resp = req
         .send()
         .map_err(|e| format!("status request failed: {e}"))?;
@@ -113,9 +107,9 @@ impl AssetStatusPool {
         }
     }
 
-    pub fn submit(&self, asset_id: u32, user_ukey: Option<String>) -> bool {
+    pub fn submit(&self, asset_id: u32, user: Option<UserAuth>) -> bool {
         match &self.0 {
-            Some(workers) => workers.tx.try_send((asset_id, user_ukey)).is_ok(),
+            Some(workers) => workers.tx.try_send((asset_id, user)).is_ok(),
             None => false,
         }
     }
@@ -129,23 +123,6 @@ impl AssetStatusPool {
             None => Vec::new(),
         }
     }
-}
-
-fn current_user_ukey(
-    auth_store: Option<Res<crate::studio::auth::StudioAuthStore>>,
-    client_ukey: Option<Res<crate::client::ClientUkey>>,
-) -> Option<String> {
-    if let Some(ukey) = auth_store
-        .as_ref()
-        .and_then(|store| store.credentials.clone())
-        .map(|creds| creds.ukey)
-        .filter(|ukey| !ukey.is_empty())
-    {
-        return Some(ukey);
-    }
-    client_ukey
-        .map(|ukey| ukey.0.clone())
-        .filter(|ukey| !ukey.is_empty())
 }
 
 #[derive(Resource, Default)]
@@ -178,7 +155,7 @@ pub fn request_missing_statuses(
     auth_store: Option<Res<crate::studio::auth::StudioAuthStore>>,
     client_ukey: Option<Res<crate::client::ClientUkey>>,
 ) {
-    let user_ukey = current_user_ukey(auth_store, client_ukey);
+    let user = super::current_user_auth(auth_store, client_ukey);
     let mut missing: HashSet<u32> = HashSet::new();
     for mesh in &meshes {
         if mesh.asset_id != 0
@@ -228,7 +205,7 @@ pub fn request_missing_statuses(
     }
     pool.ensure_started();
     for asset_id in due {
-        if pool.submit(asset_id, user_ukey.clone()) {
+        if pool.submit(asset_id, user.clone()) {
             pending.0.insert(asset_id);
             debounce.first_seen.remove(&asset_id);
         }

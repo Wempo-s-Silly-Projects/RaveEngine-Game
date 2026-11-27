@@ -1,10 +1,7 @@
 use crate::app::client::config::ClientAppConfig;
-use crate::app::client::network_boot::{
-    ClientConnectSettings, ClientSpawned, initialize_client, poll_launch_details,
-    trigger_delayed_connect,
-};
 use crate::app::common::log::setup_app_logging;
 use crate::client::ClientPlugin;
+use crate::client::session::ClientSessionPlugin;
 use crate::common::CommonPlugin;
 use bevy::prelude::*;
 use lightyear::prelude::client::ClientPlugins;
@@ -39,27 +36,14 @@ impl RaveClientApp {
                     ..default()
                 }),
         );
-        app.insert_resource(ClientConnectSettings {
-            ip: self.config.ip,
-            port: self.config.port,
-            netcode_key: self.config.netcode_key,
-            protocol_id: self.config.protocol_id,
-        });
-        app.insert_resource(crate::client::ClientUkey(self.config.ukey));
-        app.init_resource::<ClientSpawned>();
         app.add_plugins(ClientPlugins {
             tick_duration: Duration::from_secs_f64(1.0 / 60.0),
         });
         app.add_plugins(CommonPlugin);
         app.add_plugins(ClientPlugin);
-        app.add_systems(
-            Update,
-            (
-                initialize_client,
-                trigger_delayed_connect,
-                poll_launch_details,
-            ),
-        );
+        app.add_plugins(ClientSessionPlugin {
+            config: self.config.launch,
+        });
         app.run();
     }
 }

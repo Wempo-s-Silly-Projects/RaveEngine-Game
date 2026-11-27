@@ -103,14 +103,14 @@ pub fn fetch_missing_sounds(
     if server.is_some() {
         return;
     }
-    let user_ukey = super::current_user_ukey(auth_store, client_ukey);
+    let user = super::current_user_auth(auth_store, client_ukey);
     for sound in &sounds {
         let asset_id = sound.asset_id;
         if asset_id == 0 || cache.sounds.contains_key(&asset_id) || pending.0.contains(&asset_id) {
             continue;
         }
         pool.ensure_started();
-        if pool.submit_kind(asset_id, fetch::AssetKind::Sound, user_ukey.clone()) {
+        if pool.submit_kind(asset_id, fetch::AssetKind::Sound, user.clone()) {
             pending.0.insert(asset_id);
         }
     }

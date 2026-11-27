@@ -2,6 +2,8 @@ use std::time::Duration;
 
 use bevy::prelude::*;
 
+use crate::common::net::api::{UserAuth, with_asset_auth};
+
 const ASSET_WORKERS: usize = 4;
 const ASSET_QUEUE_CAP: usize = 64;
 
@@ -14,13 +16,13 @@ pub enum AssetKind {
 }
 
 struct AssetWorkers {
-    tx: crossbeam_channel::Sender<(u32, AssetKind, Option<String>)>,
+    tx: crossbeam_channel::Sender<(u32, AssetKind, Option<UserAuth>)>,
     rx: std::sync::Mutex<crossbeam_channel::Receiver<(u32, AssetKind, Result<Vec<u8>, String>)>>,
 }
 
 impl AssetWorkers {
     fn start() -> Self {
-        let (job_tx, job_rx) = crossbeam_channel::bounded::<(u32, AssetKind, Option<String>)>(ASSET_QUEUE_CAP);
+        let (job_tx, job_rx) = crossbeam_channel::bounded::<(u32, AssetKind, Option<UserAuth>)>(ASSET_QUEUE_CAP);
         let (res_tx, res_rx) =
             crossbeam_channel::bounded::<(u32, AssetKind, Result<Vec<u8>, String>)>(
                 ASSET_QUEUE_CAP,
@@ -29,12 +31,12 @@ impl AssetWorkers {
             let job_rx = job_rx.clone();
             let res_tx = res_tx.clone();
             std::thread::spawn(move || {
-                while let Ok((asset_id, kind, user_ukey)) = job_rx.recv() {
+                while let Ok((asset_id, kind, user)) = job_rx.recv() {
                     let result = match kind {
                         AssetKind::MeshTexture => {
-                            fetch_texture_bytes(asset_id, user_ukey.as_deref())
+                            fetch_texture_bytes(asset_id, user.as_ref())
                         }
-                        _ => fetch_asset_bytes(asset_id, user_ukey.as_deref()),
+                        _ => fetch_asset_bytes(asset_id, user.as_ref()),
                     };
                     let _ = res_tx.send((asset_id, kind, result));
                 }
@@ -47,26 +49,11 @@ impl AssetWorkers {
     }
 }
 
-fn with_asset_auth(
-    req: reqwest::blocking::RequestBuilder,
-    user_ukey: Option<&str>,
-) -> Result<reqwest::blocking::RequestBuilder, String> {
-    if let Ok(api_key) = crate::common::net::api::gameserver_api_key() {
-        if !api_key.is_empty() {
-            return Ok(req.header("X-Gameserver-Key", api_key));
-        }
-    }
-    match user_ukey.filter(|ukey| !ukey.is_empty()) {
-        Some(ukey) => Ok(req.query(&[("ukey", ukey)])),
-        None => Err("GAMESERVER_API_KEY environment variable is not configured and no user ukey is available".to_string()),
-    }
-}
-
-fn fetch_asset_bytes(asset_id: u32, user_ukey: Option<&str>) -> Result<Vec<u8>, String> {
+fn fetch_asset_bytes(asset_id: u32, user: Option<&UserAuth>) -> Result<Vec<u8>, String> {
     let base = crate::common::net::api::api_base();
     let url = format!("{base}/api/v1/assets/{asset_id}/file");
     let client = crate::common::net::api::blocking_client(Duration::from_secs(10))?;
-    let resp = with_asset_auth(client.get(&url), user_ukey)?
+    let resp = with_asset_auth(client.get(&url), user)?
         .send()
         .map_err(|e| format!("asset request failed: {e}"))?;
     let status = resp.status();
@@ -79,11 +66,11 @@ fn fetch_asset_bytes(asset_id: u32, user_ukey: Option<&str>) -> Result<Vec<u8>, 
     Ok(bytes.to_vec())
 }
 
-fn fetch_texture_bytes(asset_id: u32, user_ukey: Option<&str>) -> Result<Vec<u8>, String> {
+fn fetch_texture_bytes(asset_id: u32, user: Option<&UserAuth>) -> Result<Vec<u8>, String> {
     let base = crate::common::net::api::api_base();
     let url = format!("{base}/api/v1/assets/{asset_id}/texture");
     let client = crate::common::net::api::blocking_client(Duration::from_secs(10))?;
-    let resp = with_asset_auth(client.get(&url), user_ukey)?
+    let resp = with_asset_auth(client.get(&url), user)?
         .send()
         .map_err(|e| format!("texture request failed: {e}"))?;
     let status = resp.status();
@@ -109,18 +96,18 @@ impl AssetFetchPool {
         }
     }
 
-    pub fn submit(&self, asset_id: u32, user_ukey: Option<String>) -> bool {
-        self.submit_kind(asset_id, AssetKind::Image, user_ukey)
+    pub fn submit(&self, asset_id: u32, user: Option<UserAuth>) -> bool {
+        self.submit_kind(asset_id, AssetKind::Image, user)
     }
 
     pub fn submit_kind(
         &self,
         asset_id: u32,
         kind: AssetKind,
-        user_ukey: Option<String>,
+        user: Option<UserAuth>,
     ) -> bool {
         match &self.0 {
-            Some(workers) => workers.tx.try_send((asset_id, kind, user_ukey)).is_ok(),
+            Some(workers) => workers.tx.try_send((asset_id, kind, user)).is_ok(),
             None => false,
         }
     }

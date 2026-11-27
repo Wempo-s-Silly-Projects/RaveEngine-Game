@@ -43,22 +43,128 @@ pub fn gravity_scale_for_avian(player_gravity: f32, world_gravity_mag: f32) -> f
     }
 }
 
+/// Decides how a freshly connected client is identified.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConnectIdentity {
+    /// The platform sealed this identity into the connect token.
+    Token { uid: i32, username: Option<String> },
+    /// No platform identity; wait for a legacy HelloMessage ukey.
+    AwaitHello,
+    Reject(String),
+}
+
+pub fn classify_connect_identity(
+    client_id: u64,
+    user_data: Option<&[u8; crate::common::net::connect_token::USER_DATA_BYTES]>,
+    our_server_id: Option<&str>,
+    hello_enabled: bool,
+) -> ConnectIdentity {
+    let identity = user_data.map(crate::common::net::connect_token::parse_user_data);
+    match identity {
+        Some(identity) if identity.user_id != 0 => {
+            if identity.user_id != client_id {
+                return ConnectIdentity::Reject(
+                    "connect token user id does not match its client id".to_string(),
+                );
+            }
+            // Servers may share a netcode key, so the sealed server id is what binds a token to
+            // this server. Dev servers without an id accept any.
+            if let Some(ours) = our_server_id {
+                if identity.server_id.as_deref() != Some(ours) {
+                    return ConnectIdentity::Reject(format!(
+                        "connect token was issued for server {}",
+                        identity.server_id.as_deref().unwrap_or("<none>")
+                    ));
+                }
+            }
+            let Ok(uid) = i32::try_from(identity.user_id) else {
+                return ConnectIdentity::Reject("user id out of range".to_string());
+            };
+            ConnectIdentity::Token {
+                uid,
+                username: identity.username,
+            }
+        }
+        _ if hello_enabled => ConnectIdentity::AwaitHello,
+        _ => ConnectIdentity::Reject("connect token carries no platform identity".to_string()),
+    }
+}
+
 pub fn handle_new_client(
     trigger: On<Add, Connected>,
-    query: Query<&RemoteId, With<ClientOf>>,
-    _players_service_query: Query<
-        Entity,
-        With<crate::common::net::components::PlayersServiceContainer>,
-    >,
+    query: Query<(&RemoteId, Option<&TokenUserData>), With<ClientOf>>,
+    settings: Res<crate::server::ServerSettings>,
+    mut pending: ResMut<crate::server::PendingAuths>,
+    mut auth_pool: ResMut<crate::server::AuthWorkerPool>,
+    reporter: Option<Res<crate::server::platform::PlatformReporter>>,
+    mut kick_senders: Query<&mut MessageSender<crate::common::net::messages::KickMessage>>,
 ) {
-    let Ok(remote_id) = query.get(trigger.entity) else {
+    let Ok((remote_id, user_data)) = query.get(trigger.entity) else {
         warn!(
             "handle_new_client failed: RemoteId missing on entity {:?}",
             trigger.entity
         );
         return;
     };
-    let _client_id = remote_id.0.to_bits();
+    let client_id = remote_id.0.to_bits();
+    let identity = classify_connect_identity(
+        client_id,
+        user_data.map(|d| &d.0),
+        settings.server_id.as_deref(),
+        settings.hello_auth_enabled(),
+    );
+    match identity {
+        ConnectIdentity::AwaitHello => {
+            debug!("Client {client_id} connected without platform identity; awaiting HelloMessage");
+        }
+        ConnectIdentity::Token { uid, username } => {
+            auth_pool.ensure_started(
+                settings.allow_unauthenticated,
+                reporter.as_ref().map(|r| r.config()),
+            );
+            if pending.0.len() >= MAX_PENDING_AUTHS
+                || !auth_pool.submit(
+                    client_id,
+                    crate::server::AuthJob::Token { uid, username },
+                )
+            {
+                warn!("Auth queue full; refusing client {client_id}");
+                send_kick(&mut kick_senders, trigger.entity, "The server is busy, try again.");
+                return;
+            }
+            info!("Client {client_id} authenticated by connect token (uid {uid})");
+            pending.0.insert(
+                client_id,
+                crate::server::PendingAuth {
+                    entity: trigger.entity,
+                    via_token: true,
+                    disconnected: false,
+                },
+            );
+        }
+        ConnectIdentity::Reject(reason) => {
+            warn!("Rejecting client {client_id}: {reason}");
+            send_kick(
+                &mut kick_senders,
+                trigger.entity,
+                &format!("Authentication failed: {reason}"),
+            );
+        }
+    }
+}
+
+fn send_kick(
+    senders: &mut Query<&mut MessageSender<crate::common::net::messages::KickMessage>>,
+    entity: Entity,
+    reason: &str,
+) {
+    if let Ok(mut sender) = senders.get_mut(entity) {
+        let _ = sender.send::<crate::common::net::messages::GameChannel>(
+            crate::common::net::messages::KickMessage {
+                reason: reason.to_string(),
+            },
+        );
+    }
 }
 
 const MAX_PENDING_AUTHS: usize = 64;
@@ -67,6 +173,7 @@ pub fn handle_hello_messages(
     mut pending: ResMut<crate::server::PendingAuths>,
     mut auth_pool: ResMut<crate::server::AuthWorkerPool>,
     settings: Res<crate::server::ServerSettings>,
+    reporter: Option<Res<crate::server::platform::PlatformReporter>>,
     mut receivers: Query<(
         Entity,
         &RemoteId,
@@ -74,9 +181,20 @@ pub fn handle_hello_messages(
         Option<&ReplicationSender>,
     )>,
 ) {
-    auth_pool.ensure_started(settings.allow_unauthenticated);
+    if !settings.hello_auth_enabled() {
+        // Token-only servers never trust client-sent ukeys.
+        for (_, _, mut receiver, _) in receivers.iter_mut() {
+            for _ in receiver.receive() {}
+        }
+        return;
+    }
+    auth_pool.ensure_started(
+        settings.allow_unauthenticated,
+        reporter.as_ref().map(|r| r.config()),
+    );
     for (client_entity, remote_id, mut receiver, rep_sender) in receivers.iter_mut() {
         if rep_sender.is_some() {
+            for _ in receiver.receive() {}
             continue;
         }
         let client_id = remote_id.0.to_bits();
@@ -91,7 +209,7 @@ pub fn handle_hello_messages(
                 );
                 break;
             }
-            if !auth_pool.submit(client_id, hello.ukey) {
+            if !auth_pool.submit(client_id, crate::server::AuthJob::Ukey(hello.ukey)) {
                 warn!(
                     "Auth worker queue full; dropping hello from client {}",
                     client_id
@@ -102,7 +220,14 @@ pub fn handle_hello_messages(
                 "Received HelloMessage from client {}, queued async auth",
                 client_id
             );
-            pending.0.insert(client_id, client_entity);
+            pending.0.insert(
+                client_id,
+                crate::server::PendingAuth {
+                    entity: client_entity,
+                    via_token: false,
+                    disconnected: false,
+                },
+            );
         }
     }
 }
@@ -111,7 +236,10 @@ pub fn handle_auth_results(
     mut commands: Commands,
     mut player_map: ResMut<crate::server::ClientPlayerMap>,
     mut pending: ResMut<crate::server::PendingAuths>,
+    mut admitted: ResMut<crate::server::AdmittedUsers>,
     auth_pool: Res<crate::server::AuthWorkerPool>,
+    reporter: Option<Res<crate::server::platform::PlatformReporter>>,
+    shutdown: Res<crate::server::ShutdownState>,
     world_gravity: Res<Gravity>,
     mut sender_query: Query<&mut MessageSender<crate::common::net::messages::KickMessage>>,
     mut success_sender_query: Query<
@@ -127,17 +255,24 @@ pub fn handle_auth_results(
     auth_pool.drain_results_into(&mut results);
 
     for (client_id, result) in results.drain(..) {
-        let Some(&client_entity) = pending.0.get(&client_id) else {
+        let Some(pending_auth) = pending.0.remove(&client_id) else {
             continue;
         };
-        pending.0.remove(&client_id);
+        let client_entity = pending_auth.entity;
         match result {
             Ok(response) => {
-                if commands.get_entity(client_entity).is_err() {
+                let gone =
+                    pending_auth.disconnected || commands.get_entity(client_entity).is_err();
+                if gone || shutdown.started_at.is_some() {
                     warn!(
-                        "Authentication completed for disconnected client {}, skipping spawn",
+                        "Authentication completed for client {} that is leaving, skipping spawn",
                         client_id
                     );
+                    if pending_auth.via_token {
+                        if let Some(reporter) = &reporter {
+                            reporter.leave(response.uid, player_map.0.len());
+                        }
+                    }
                     continue;
                 }
                 if let Ok(mut success_sender) = success_sender_query.get_mut(client_entity) {
@@ -223,6 +358,12 @@ pub fn handle_auth_results(
                     player_entity, client_id
                 );
                 player_map.0.insert(client_id, player_entity);
+                admitted.0.insert(client_id, response.uid);
+                if !pending_auth.via_token {
+                    if let Some(reporter) = &reporter {
+                        reporter.join(response.uid, player_map.0.len());
+                    }
+                }
             }
             Err(e) => {
                 warn!(
@@ -240,6 +381,7 @@ pub fn handle_auth_results(
         }
     }
 }
+
 
 pub fn handle_player_moves(
     mut receivers: Query<(Entity, &RemoteId, &mut MessageReceiver<PlayerMoveMessage>)>,
@@ -451,6 +593,8 @@ pub fn handle_client_disconnect(
     trigger: On<Remove, Connected>,
     query: Query<&RemoteId, With<ClientOf>>,
     mut player_map: ResMut<ClientPlayerMap>,
+    mut admitted: ResMut<crate::server::AdmittedUsers>,
+    reporter: Option<Res<crate::server::platform::PlatformReporter>>,
     mut pending: ResMut<crate::server::PendingAuths>,
     mut cooldowns: ResMut<ChatCooldowns>,
     mut sound_cooldowns: ResMut<PlayerSoundCooldowns>,
@@ -461,13 +605,92 @@ pub fn handle_client_disconnect(
     };
     let client_id = remote_id.0.to_bits();
     info!("Client disconnected: {}", client_id);
-    pending.0.remove(&client_id);
+    match pending.0.get_mut(&client_id) {
+        // Keep token joins until the worker answers so the platform gets a matching leave.
+        Some(p) if p.via_token => p.disconnected = true,
+        Some(_) => {
+            pending.0.remove(&client_id);
+        }
+        None => {}
+    }
     cooldowns.0.remove(&client_id);
     sound_cooldowns.0.remove(&client_id);
+    let uid = admitted.0.remove(&client_id);
     if let Some(player_entity) = player_map.0.remove(&client_id) {
         if commands.get_entity(player_entity).is_ok() {
             commands.entity(player_entity).despawn();
         }
+        if let (Some(uid), Some(reporter)) = (uid, &reporter) {
+            reporter.leave(uid, player_map.0.len());
+        }
+    }
+}
+
+const SHUTDOWN_KICK_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
+const SHUTDOWN_DISCONNECT_GRACE: std::time::Duration = std::time::Duration::from_millis(1000);
+const SHUTDOWN_FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// SIGTERM handling: kick everyone with a reason, report leaves, stop netcode (which sends
+/// disconnect packets), flush platform events and exit with code 0.
+pub fn graceful_shutdown(
+    mut commands: Commands,
+    mut state: ResMut<crate::server::ShutdownState>,
+    mut player_map: ResMut<ClientPlayerMap>,
+    mut admitted: ResMut<crate::server::AdmittedUsers>,
+    reporter: Option<ResMut<crate::server::platform::PlatformReporter>>,
+    servers: Query<Entity, With<Server>>,
+    mut kick_senders: Query<
+        &mut MessageSender<crate::common::net::messages::KickMessage>,
+        (With<ClientOf>, With<Connected>),
+    >,
+    mut exit: MessageWriter<AppExit>,
+) {
+    if !crate::server::SHUTDOWN_REQUESTED.load(std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let now = Instant::now();
+    let Some(started_at) = state.started_at else {
+        info!(
+            "Shutdown requested: notifying {} player(s)",
+            player_map.0.len()
+        );
+        state.started_at = Some(now);
+        for mut sender in &mut kick_senders {
+            let _ = sender.send::<crate::common::net::messages::GameChannel>(
+                crate::common::net::messages::KickMessage {
+                    reason: crate::common::net::messages::SHUTDOWN_KICK_REASON.to_string(),
+                },
+            );
+        }
+        let remaining: Vec<(u64, Entity)> = player_map.0.drain().collect();
+        let mut count = remaining.len();
+        for (client_id, player_entity) in remaining {
+            count -= 1;
+            if let (Some(uid), Some(reporter)) = (admitted.0.remove(&client_id), &reporter) {
+                reporter.leave(uid, count);
+            }
+            if commands.get_entity(player_entity).is_ok() {
+                commands.entity(player_entity).despawn();
+            }
+        }
+        return;
+    };
+    let elapsed = now.duration_since(started_at);
+    if !state.stopped && elapsed >= SHUTDOWN_KICK_GRACE {
+        state.stopped = true;
+        for entity in &servers {
+            commands.trigger(Stop { entity });
+        }
+        return;
+    }
+    if state.stopped && elapsed >= SHUTDOWN_KICK_GRACE + SHUTDOWN_DISCONNECT_GRACE {
+        if let Some(mut reporter) = reporter {
+            if !reporter.flush(SHUTDOWN_FLUSH_TIMEOUT) {
+                warn!("Timed out flushing platform events during shutdown");
+            }
+        }
+        info!("Shutdown complete");
+        exit.write(AppExit::Success);
     }
 }
 
@@ -642,6 +865,69 @@ pub fn sync_transforms_to_network(
         net_transform.rotation = transform.rotation;
         net_transform.scale = transform.scale;
         net_transform.velocity = velocity;
+    }
+}
+
+#[cfg(test)]
+mod connect_identity_tests {
+    use super::*;
+    use crate::common::net::connect_token::encode_user_data;
+
+    #[test]
+    fn admits_platform_tokens_for_this_server() {
+        let data = encode_user_data(42, "aB3dE5gH", Some("wempo"));
+        assert_eq!(
+            classify_connect_identity(42, Some(&data), Some("aB3dE5gH"), false),
+            ConnectIdentity::Token {
+                uid: 42,
+                username: Some("wempo".to_string())
+            }
+        );
+        // Dev servers without an id accept any platform token.
+        assert!(matches!(
+            classify_connect_identity(42, Some(&data), None, false),
+            ConnectIdentity::Token { uid: 42, .. }
+        ));
+    }
+
+    #[test]
+    fn rejects_tokens_for_other_servers_or_users() {
+        let data = encode_user_data(42, "aB3dE5gH", None);
+        assert!(matches!(
+            classify_connect_identity(42, Some(&data), Some("zzzzzzzz"), true),
+            ConnectIdentity::Reject(_)
+        ));
+        assert!(matches!(
+            classify_connect_identity(43, Some(&data), Some("aB3dE5gH"), true),
+            ConnectIdentity::Reject(_)
+        ));
+        let no_server = encode_user_data(42, "", None);
+        assert!(matches!(
+            classify_connect_identity(42, Some(&no_server), Some("aB3dE5gH"), true),
+            ConnectIdentity::Reject(_)
+        ));
+        let huge = encode_user_data(u64::MAX, "aB3dE5gH", None);
+        assert!(matches!(
+            classify_connect_identity(u64::MAX, Some(&huge), Some("aB3dE5gH"), true),
+            ConnectIdentity::Reject(_)
+        ));
+    }
+
+    #[test]
+    fn tokens_without_identity_need_legacy_hello() {
+        let empty = [0u8; crate::common::net::connect_token::USER_DATA_BYTES];
+        assert_eq!(
+            classify_connect_identity(7, Some(&empty), Some("aB3dE5gH"), true),
+            ConnectIdentity::AwaitHello
+        );
+        assert_eq!(
+            classify_connect_identity(7, None, None, true),
+            ConnectIdentity::AwaitHello
+        );
+        assert!(matches!(
+            classify_connect_identity(7, Some(&empty), Some("aB3dE5gH"), false),
+            ConnectIdentity::Reject(_)
+        ));
     }
 }
 

@@ -180,21 +180,25 @@ fn setup_image_meshes(
     }
 }
 
-pub(crate) fn current_user_ukey(
+/// Credentials for asset requests: the logged-in Studio or client session first, then the
+/// legacy ukey a dev-mode client was launched with.
+pub(crate) fn current_user_auth(
     auth_store: Option<Res<crate::studio::auth::StudioAuthStore>>,
     client_ukey: Option<Res<crate::client::ClientUkey>>,
-) -> Option<String> {
-    if let Some(ukey) = auth_store
-        .as_ref()
-        .and_then(|store| store.credentials.clone())
-        .map(|creds| creds.ukey)
-        .filter(|ukey| !ukey.is_empty())
-    {
-        return Some(ukey);
+) -> Option<crate::common::net::api::UserAuth> {
+    use crate::common::net::api::UserAuth;
+    if let Some(creds) = auth_store.as_ref().and_then(|store| store.credentials.as_ref()) {
+        if let Some(token) = creds.bearer() {
+            return Some(UserAuth::Bearer(token.to_string()));
+        }
+        if !creds.ukey.is_empty() {
+            return Some(UserAuth::LegacyUkey(creds.ukey.clone()));
+        }
     }
     client_ukey
         .map(|ukey| ukey.0.clone())
         .filter(|ukey| !ukey.is_empty())
+        .map(UserAuth::LegacyUkey)
 }
 
 fn fetch_missing_images(
@@ -205,14 +209,14 @@ fn fetch_missing_images(
     auth_store: Option<Res<crate::studio::auth::StudioAuthStore>>,
     client_ukey: Option<Res<crate::client::ClientUkey>>,
 ) {
-    let user_ukey = current_user_ukey(auth_store, client_ukey);
+    let user = current_user_auth(auth_store, client_ukey);
     for image in &images {
         let asset_id = image.asset_id;
         if asset_id == 0 || cache.images.contains_key(&asset_id) || pending.0.contains(&asset_id) {
             continue;
         }
         pool.ensure_started();
-        if pool.submit(asset_id, user_ukey.clone()) {
+        if pool.submit(asset_id, user.clone()) {
             pending.0.insert(asset_id);
         }
     }
@@ -453,7 +457,7 @@ fn fetch_missing_meshes(
     auth_store: Option<Res<crate::studio::auth::StudioAuthStore>>,
     client_ukey: Option<Res<crate::client::ClientUkey>>,
 ) {
-    let user_ukey = current_user_ukey(auth_store, client_ukey);
+    let user = current_user_auth(auth_store, client_ukey);
     for mesh in &meshes {
         let asset_id = mesh.asset_id;
         if asset_id == 0 || pending.0.contains(&asset_id) {
@@ -463,7 +467,7 @@ fn fetch_missing_meshes(
             continue;
         }
         pool.ensure_started();
-        if pool.submit_kind(asset_id, fetch::AssetKind::Mesh, user_ukey.clone()) {
+        if pool.submit_kind(asset_id, fetch::AssetKind::Mesh, user.clone()) {
             pending.0.insert(asset_id);
         }
     }
@@ -518,7 +522,7 @@ fn fetch_missing_textures(
     auth_store: Option<Res<crate::studio::auth::StudioAuthStore>>,
     client_ukey: Option<Res<crate::client::ClientUkey>>,
 ) {
-    let user_ukey = current_user_ukey(auth_store, client_ukey);
+    let user = current_user_auth(auth_store, client_ukey);
     for (_entity, texture, child_of) in &textures {
         if texture.is_decal {
             let asset_id = texture.asset_id;
@@ -529,7 +533,7 @@ fn fetch_missing_textures(
                 continue;
             }
             pool.ensure_started();
-            if pool.submit(asset_id, user_ukey.clone()) {
+            if pool.submit(asset_id, user.clone()) {
                 pending_images.0.insert(asset_id);
             }
         } else {
@@ -547,7 +551,7 @@ fn fetch_missing_textures(
                 continue;
             }
             pool.ensure_started();
-            if pool.submit_kind(asset_id, fetch::AssetKind::MeshTexture, user_ukey.clone()) {
+            if pool.submit_kind(asset_id, fetch::AssetKind::MeshTexture, user.clone()) {
                 pending_sidecars.0.insert(asset_id);
             }
         }

@@ -3,7 +3,6 @@ use RaveEngineLib::common::CommonPlugin;
 use RaveEngineLib::common::net::components::NetworkTransform;
 #[cfg(feature = "bench")]
 use RaveEngineLib::common::net::components::Player;
-use RaveEngineLib::server::ServerPlugin;
 #[cfg(feature = "bench")]
 use avian3d::prelude::*;
 use bevy::app::ScheduleRunnerPlugin;
@@ -83,14 +82,18 @@ fn main() {
         std::env::set_var("RUST_LOG", new_rust_log);
     }
 
-    let mut port = 5000;
-    let mut map_path = RaveEngineLib::common::assets_path::resolve_vrtx_path("assets/maps/default.vrtx")
-        .to_string_lossy()
-        .into_owned();
-    let mut bind_addr = std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1));
-    let mut netcode_key_cli: Option<String> = None;
-    let mut protocol_id_cli: Option<u64> = None;
-    let mut allow_unauthenticated = false;
+    let config = match RaveEngineLib::app::server::config::ServerAppConfig::from_env_and_args() {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("RaveEngineServer: {e}");
+            eprintln!(
+                "Set NETCODE_PRIVATE_KEY (64 hex chars) and NETCODE_PROTOCOL_ID, or pass --dev for local development."
+            );
+            std::process::exit(1);
+        }
+    };
+    install_shutdown_handler();
+
     #[cfg(feature = "bench")]
     let mut bench_mode = false;
     #[cfg(feature = "bench")]
@@ -100,51 +103,26 @@ fn main() {
     #[cfg(feature = "bench")]
     let mut bench_scenario = "server".to_string();
 
-    let args: Vec<String> = std::env::args().collect();
-    for i in 0..args.len() {
-        if args[i] == "--port" && i + 1 < args.len() {
-            if let Ok(p) = args[i + 1].parse::<u16>() {
-                port = p;
+    #[cfg(feature = "bench")]
+    {
+        let args: Vec<String> = std::env::args().collect();
+        for i in 0..args.len() {
+            if args[i] == "--benchmark" {
+                bench_mode = true;
             }
-        }
-        if args[i] == "--map" && i + 1 < args.len() {
-            map_path = args[i + 1].clone();
-        }
-        if args[i] == "--bind" && i + 1 < args.len() {
-            if let Ok(ip) = args[i + 1].parse::<std::net::IpAddr>() {
-                bind_addr = ip;
+            if args[i] == "--bench-frames" && i + 1 < args.len() {
+                if let Ok(f) = args[i + 1].parse::<u64>() {
+                    bench_frames = f;
+                }
             }
-        }
-        if args[i] == "--netcode-key" && i + 1 < args.len() {
-            netcode_key_cli = Some(args[i + 1].clone());
-        }
-        if args[i] == "--protocol-id" && i + 1 < args.len() {
-            if let Ok(id) = args[i + 1].parse::<u64>() {
-                protocol_id_cli = Some(id);
+            if args[i] == "--bench-warmup" && i + 1 < args.len() {
+                if let Ok(f) = args[i + 1].parse::<u64>() {
+                    bench_warmup = f;
+                }
             }
-        }
-        if args[i] == "--allow-unauthenticated" {
-            allow_unauthenticated = true;
-        }
-        #[cfg(feature = "bench")]
-        if args[i] == "--benchmark" {
-            bench_mode = true;
-        }
-        #[cfg(feature = "bench")]
-        if args[i] == "--bench-frames" && i + 1 < args.len() {
-            if let Ok(f) = args[i + 1].parse::<u64>() {
-                bench_frames = f;
+            if args[i] == "--bench-scenario" && i + 1 < args.len() {
+                bench_scenario = args[i + 1].clone();
             }
-        }
-        #[cfg(feature = "bench")]
-        if args[i] == "--bench-warmup" && i + 1 < args.len() {
-            if let Ok(f) = args[i + 1].parse::<u64>() {
-                bench_warmup = f;
-            }
-        }
-        #[cfg(feature = "bench")]
-        if args[i] == "--bench-scenario" && i + 1 < args.len() {
-            bench_scenario = args[i + 1].clone();
         }
     }
 
@@ -175,28 +153,10 @@ fn main() {
     app.add_plugins(CommonPlugin);
     #[cfg(feature = "bench")]
     if !bench_mode || bench_scenario == "server" {
-        app.add_plugins(ServerPlugin {
-            map_path: map_path.clone(),
-            port,
-            bind_addr,
-            netcode_key: RaveEngineLib::common::net::netcode::netcode_private_key(
-                netcode_key_cli.as_deref(),
-            ),
-            protocol_id: RaveEngineLib::common::net::netcode::netcode_protocol_id(protocol_id_cli),
-            allow_unauthenticated,
-        });
+        app.add_plugins(config.into_plugin());
     }
     #[cfg(not(feature = "bench"))]
-    app.add_plugins(ServerPlugin {
-        map_path,
-        port,
-        bind_addr,
-        netcode_key: RaveEngineLib::common::net::netcode::netcode_private_key(
-            netcode_key_cli.as_deref(),
-        ),
-        protocol_id: RaveEngineLib::common::net::netcode::netcode_protocol_id(protocol_id_cli),
-        allow_unauthenticated,
-    });
+    app.add_plugins(config.into_plugin());
 
     #[cfg(feature = "bench")]
     if bench_mode {
@@ -227,4 +187,24 @@ fn main() {
     }
 
     app.run();
+}
+
+/// SIGTERM/SIGINT start a graceful shutdown; a second signal exits immediately.
+#[cfg(target_os = "android")]
+fn install_shutdown_handler() {}
+
+/// SIGTERM/SIGINT start a graceful shutdown; a second signal exits immediately.
+#[cfg(not(target_os = "android"))]
+fn install_shutdown_handler() {
+    static SIGNALS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+    let result = ctrlc::try_set_handler(|| {
+        if SIGNALS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 0 {
+            eprintln!("Second shutdown signal received, exiting immediately");
+            std::process::exit(0);
+        }
+        RaveEngineLib::server::request_graceful_shutdown();
+    });
+    if let Err(e) = result {
+        eprintln!("Failed to install SIGTERM handler: {e}");
+    }
 }

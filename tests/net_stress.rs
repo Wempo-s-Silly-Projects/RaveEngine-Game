@@ -69,6 +69,9 @@ fn build_server_app(port: u16) -> App {
         netcode_key: [0u8; 32],
         protocol_id: 0,
         allow_unauthenticated: true,
+        legacy_ukey_auth: true,
+        server_id: None,
+        platform: None,
     });
     app.init_resource::<PingSnapshot>();
     app.add_systems(Update, sample_pings);

@@ -24,6 +24,8 @@ fn stress_app(tuned: bool) -> App {
         netcode_key: [0u8; 32],
         protocol_id: 0,
         allow_unauthenticated: true,
+        legacy_ukey_auth: true,
+        server_id: None,
     });
     app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
         1.0 / 60.0,

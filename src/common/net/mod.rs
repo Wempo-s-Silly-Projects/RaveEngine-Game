@@ -1,6 +1,7 @@
 pub mod api;
 pub mod auth;
 pub mod components;
+pub mod connect_token;
 pub mod messages;
 pub mod netcode;
 

@@ -86,7 +86,7 @@ function Run-Bench {
         $eap = $ErrorActionPreference
         $ErrorActionPreference = "SilentlyContinue"
         try {
-            $result = & .\target\release\RaveEngineServer.exe --benchmark --bench-scenario $BenchScenario --bench-frames $Frames --bench-warmup $WarmupFrames --map $MapPath 2>&1
+            $result = & .\target\release\RaveEngineServer.exe --dev --benchmark --bench-scenario $BenchScenario --bench-frames $Frames --bench-warmup $WarmupFrames --map $MapPath 2>&1
         } finally {
             $ErrorActionPreference = $eap
         }

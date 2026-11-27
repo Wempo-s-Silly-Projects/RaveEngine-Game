@@ -371,9 +371,7 @@ pub fn draw_onboarding(
                             let logout_btn = ui.add(egui::Label::new(egui::RichText::new("Logout and switch account").size(11.0).underline()).sense(egui::Sense::click()));
                             if logout_btn.hovered() { ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand); }
                             if logout_btn.clicked() {
-                                crate::studio::auth::clear_studio_credentials();
-                                auth_store.credentials = None;
-                                auth_flow.error = None;
+                                crate::studio::auth::log_out(auth_store, auth_flow);
                             }
                             ui.add_space(12.0);
                             let reauth_btn = ui.add(egui::Button::new(egui::RichText::new("Re-authenticate").size(11.0)));
@@ -397,12 +395,7 @@ pub fn draw_onboarding(
                             }
                             ui.add_space(12.0);
                             if ui.add(egui::Button::new("Cancel")).clicked() {
-                                auth_flow.state = None;
-                                auth_flow.redirect_uri = None;
-                                auth_flow.receiver = None;
-                                auth_flow.error = None;
-                                auth_flow.waiting_since = None;
-                                auth_flow.is_polling = false;
+                                auth_flow.reset();
                             }
                             ui.add_space(8.0);
                             if ui.add(egui::Button::new(egui::RichText::new("Open browser again").size(11.0))).clicked() {

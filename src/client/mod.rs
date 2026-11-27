@@ -1,5 +1,7 @@
 pub mod cursor;
+pub mod launch;
 pub mod player;
+pub mod session;
 pub mod sky;
 pub mod ui;
 pub mod uri;
@@ -21,6 +23,15 @@ pub struct ClientUkey(pub String);
 
 #[derive(Resource)]
 pub struct LocalClientId(pub u64);
+
+/// What the server told us about this connection, for the session UI.
+#[derive(Resource, Default, Debug)]
+pub struct ServerSessionEvents {
+    /// The server admitted us (AuthSuccessMessage received).
+    pub admitted: bool,
+    /// Reason from the last KickMessage.
+    pub kick_reason: Option<String>,
+}
 
 #[derive(Component)]
 pub struct LocalPlayer;
@@ -86,6 +97,7 @@ impl Plugin for ClientPlugin {
             .init_resource::<ui::chat_container::LocalUsername>()
             .init_resource::<ui::ScoreboardPanelState>()
             .init_resource::<PlaytestState>()
+            .init_resource::<ServerSessionEvents>()
             .init_resource::<StudioPlaytestPhysicsState>()
             .init_resource::<LocalPredictionState>()
             .init_resource::<ReplicationStats>()
@@ -1560,10 +1572,12 @@ fn handle_kick_message(
         Entity,
         &mut MessageReceiver<crate::common::net::messages::KickMessage>,
     )>,
+    mut events: ResMut<ServerSessionEvents>,
 ) {
     for (entity, mut receiver) in &mut receivers {
         for kick in receiver.receive() {
             warn!("KICKED from server! Reason: {}", kick.reason);
+            events.kick_reason = Some(kick.reason);
             commands.trigger(lightyear::prelude::client::Disconnect { entity });
         }
     }
@@ -1572,9 +1586,11 @@ fn handle_kick_message(
 fn handle_auth_success(
     mut receivers: Query<&mut MessageReceiver<crate::common::net::messages::AuthSuccessMessage>>,
     mut local_username: ResMut<ui::chat_container::LocalUsername>,
+    mut events: ResMut<ServerSessionEvents>,
 ) {
     for mut receiver in &mut receivers {
         for success in receiver.receive() {
+            events.admitted = true;
             info!(
                 "Successfully authenticated! User ID: {}, Username: {}",
                 success.uid, success.username

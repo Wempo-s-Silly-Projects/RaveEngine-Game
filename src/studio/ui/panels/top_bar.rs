@@ -1091,7 +1091,7 @@ pub fn draw_top_bar(
                                 let playtest_port = crate::app::server::bootstrap::pick_free_playtest_port();
                                 let playtest_key: [u8; 32] = rand::random();
                                 let playtest_protocol_id: u64 = rand::random();
-                                let server_app = crate::app::server::bootstrap::RaveServerApp::new(crate::app::server::config::ServerAppConfig { port: playtest_port, map_path: temp_map_path, bind_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)), netcode_key: playtest_key, protocol_id: playtest_protocol_id, allow_unauthenticated: true });
+                                let server_app = crate::app::server::bootstrap::RaveServerApp::new(crate::app::server::config::ServerAppConfig::playtest(playtest_port, temp_map_path, playtest_key, playtest_protocol_id));
                                 std::thread::spawn(move || { server_app.run(); });
                                 std::thread::sleep(std::time::Duration::from_millis(100));
                                 let server_addr = std::net::SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)), playtest_port);
@@ -2081,14 +2081,12 @@ pub fn draw_top_bar(
                                 let playtest_protocol_id: u64 = rand::random();
 
                                 let server_app = crate::app::server::bootstrap::RaveServerApp::new(
-                                    crate::app::server::config::ServerAppConfig {
-                                        port: playtest_port,
-                                        map_path: temp_map_path,
-                                        bind_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)),
-                                        netcode_key: playtest_key,
-                                        protocol_id: playtest_protocol_id,
-                                        allow_unauthenticated: true,
-                                    }
+                                    crate::app::server::config::ServerAppConfig::playtest(
+                                        playtest_port,
+                                        temp_map_path,
+                                        playtest_key,
+                                        playtest_protocol_id,
+                                    )
                                 );
                                 std::thread::spawn(move || {
                                     server_app.run();

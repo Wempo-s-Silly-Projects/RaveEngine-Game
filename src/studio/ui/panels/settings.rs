@@ -363,14 +363,7 @@ fn draw_account_tab(
         );
         ui.add_space(4.0);
         if ui.button("Logout").clicked() {
-            crate::studio::auth::clear_studio_credentials();
-            auth_store.credentials = None;
-            auth_flow.state = None;
-            auth_flow.redirect_uri = None;
-            auth_flow.receiver = None;
-            auth_flow.error = None;
-            auth_flow.waiting_since = None;
-            auth_flow.is_polling = false;
+            crate::studio::auth::log_out(auth_store, auth_flow);
         }
     } else if auth_flow.state.is_some() {
         ui.horizontal(|ui| {
@@ -380,12 +373,7 @@ fn draw_account_tab(
         ui.label(muted("Complete login in your browser, then return here."));
         ui.add_space(4.0);
         if ui.button("Cancel").clicked() {
-            auth_flow.state = None;
-            auth_flow.redirect_uri = None;
-            auth_flow.receiver = None;
-            auth_flow.error = None;
-            auth_flow.waiting_since = None;
-            auth_flow.is_polling = false;
+            auth_flow.reset();
         }
     } else {
         ui.label(egui::RichText::new("VERTEXIA Account").strong().size(13.0));

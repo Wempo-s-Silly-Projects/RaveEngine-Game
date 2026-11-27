@@ -29,7 +29,7 @@ function Run-Scenario {
     $eap = $ErrorActionPreference
     $ErrorActionPreference = "SilentlyContinue"
     try {
-        $result = & $exe --benchmark --bench-scenario $BenchScenario --bench-frames $Frames --bench-warmup $WarmupFrames --map $MapPath 2>&1
+        $result = & $exe --dev --benchmark --bench-scenario $BenchScenario --bench-frames $Frames --bench-warmup $WarmupFrames --map $MapPath 2>&1
     } finally {
         $ErrorActionPreference = $eap
     }

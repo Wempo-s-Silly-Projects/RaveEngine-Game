@@ -27,27 +27,26 @@ mod desktop_studio {
                     }
                     if let Some(code) = code_opt {
                         if !code.is_empty() {
-                            let base = RaveEngineLib::studio::auth::website_base();
-                            let url = format!("{base}/api/v1/studio/exchange");
-                            let client = std::time::Duration::from_secs(10);
-                            if let Ok(c) = RaveEngineLib::common::net::api::blocking_client(client) {
-                                if let Ok(resp) = c.post(&url).json(&serde_json::json!({"code": code})).send() {
-                                    if resp.status().is_success() {
-                                        if let Ok(body) = resp.text() {
-                                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
-                                                if let (Some(username), Some(ukey), Some(uid)) = (v.get("username").and_then(|x| x.as_str()), v.get("ukey").and_then(|x| x.as_str()), v.get("uid").and_then(|x| x.as_i64())) {
-                                                    let creds = RaveEngineLib::studio::auth::StoredCredentials { username: username.to_string(), uid: uid as i32, ukey: ukey.to_string() };
-                                                    let _ = RaveEngineLib::studio::auth::save_studio_credentials(&creds);
-                                                    println!("VERTEXIA Studio authenticated as {username} (uid {uid}) via URI");
-                                                    std::process::exit(0);
-                                                }
-                                            }
-                                        }
+                            // Runs before the Bevy app exists, so a blocking exchange is fine here.
+                            match RaveEngineLib::studio::auth::exchange_code(&code) {
+                                Ok(creds) => {
+                                    if let Err(e) =
+                                        RaveEngineLib::studio::auth::save_studio_credentials(&creds)
+                                    {
+                                        eprintln!("{e}");
+                                        std::process::exit(1);
                                     }
+                                    println!(
+                                        "VERTEXIA Studio authenticated as {} (uid {}) via URI",
+                                        creds.username, creds.uid
+                                    );
+                                    std::process::exit(0);
+                                }
+                                Err(e) => {
+                                    eprintln!("Failed to exchange studio auth code via URI: {e}");
+                                    std::process::exit(1);
                                 }
                             }
-                            eprintln!("Failed to exchange studio auth code via URI");
-                            std::process::exit(1);
                         }
                     }
                 }
