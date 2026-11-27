@@ -41,7 +41,13 @@ impl ClientAppConfig {
                 port = join.port;
                 if !join.ukey.is_empty() { ukey = join.ukey; }
                 if !join.connect_token.is_empty() {
-                    connect_token = crate::common::net::api::decode_connect_token(&join.connect_token).ok();
+                    connect_token = Some(
+                        crate::common::net::api::decode_connect_token(&join.connect_token)
+                            .unwrap_or_else(|err| {
+                                eprintln!("Invalid VERTEXIA connect token: {err}");
+                                std::process::exit(1);
+                            }),
+                    );
                 }
                 launch_code = join.code;
                 if !join.api_base.is_empty() { api_origin = join.api_base; }
@@ -72,7 +78,10 @@ impl ClientAppConfig {
         if !launch_code.is_empty() {
             unsafe { std::env::set_var("VERTEXIA_API_DOMAIN", &api_origin); }
             ukey = crate::common::net::api::exchange_client_code(&api_origin, &launch_code)
-                .unwrap_or_default();
+                .unwrap_or_else(|err| {
+                    eprintln!("{err}");
+                    std::process::exit(1);
+                });
         }
 
         let netcode_key = netcode_key_cli
