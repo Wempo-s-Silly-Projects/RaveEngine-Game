@@ -72,9 +72,10 @@ pub fn poll_launch_details(
                 let mut access_token = info.ukey;
                 if let Some(code) = info.code.as_deref().filter(|value| !value.is_empty()) {
                     let api = info.api.as_deref().filter(|value| !value.is_empty())
+                        .map(str::to_owned)
                         .unwrap_or_else(crate::common::net::api::api_base);
-                    unsafe { std::env::set_var("VERTEXIA_API_DOMAIN", api); }
-                    access_token = match crate::common::net::api::exchange_client_code(api, code) {
+                    unsafe { std::env::set_var("VERTEXIA_API_DOMAIN", &api); }
+                    access_token = match crate::common::net::api::exchange_client_code(&api, code) {
                         Ok(token) => token,
                         Err(err) => {
                             error!("VERTEXIA client authorization exchange failed: {err}");
