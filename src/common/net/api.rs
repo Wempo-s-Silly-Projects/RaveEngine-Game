@@ -1,12 +1,14 @@
 use std::time::Duration;
 
-pub const API_BASE_URL: &str = "http://localhost:3000";
+pub const API_BASE_URL: &str = "https://vertexia.wempos-forum.com";
 
 pub fn api_base() -> String {
-    if let Ok(value) = std::env::var("VERTIGO_API_DOMAIN") {
-        let trimmed = value.trim().trim_end_matches('/').to_string();
-        if !trimmed.is_empty() {
-            return trimmed;
+    for key in ["VERTEXIA_API_DOMAIN", "VERTIGO_API_DOMAIN"] {
+        if let Ok(value) = std::env::var(key) {
+            let trimmed = value.trim().trim_end_matches('/').to_string();
+            if !trimmed.is_empty() {
+                return trimmed;
+            }
         }
     }
     API_BASE_URL.to_string()
@@ -44,18 +46,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn api_base_prefers_env_domain() {
-        let prev = std::env::var("VERTIGO_API_DOMAIN").ok();
+    fn api_base_prefers_vertexia_domain_and_keeps_legacy_alias() {
+        let previous_vertexia = std::env::var("VERTEXIA_API_DOMAIN").ok();
+        let previous_vertigo = std::env::var("VERTIGO_API_DOMAIN").ok();
+
         unsafe {
-            std::env::set_var("VERTIGO_API_DOMAIN", "http://127.0.0.1:3000/");
+            std::env::set_var("VERTEXIA_API_DOMAIN", "https://api.example.test/");
+            std::env::set_var("VERTIGO_API_DOMAIN", "http://legacy.example.test/");
         }
-        assert_eq!(api_base(), "http://127.0.0.1:3000");
+        assert_eq!(api_base(), "https://api.example.test");
+
+        unsafe {
+            std::env::remove_var("VERTEXIA_API_DOMAIN");
+        }
+        assert_eq!(api_base(), "http://legacy.example.test");
+
         unsafe {
             std::env::remove_var("VERTIGO_API_DOMAIN");
         }
         assert_eq!(api_base(), API_BASE_URL);
-        if let Some(value) = prev {
-            unsafe {
+
+        unsafe {
+            if let Some(value) = previous_vertexia {
+                std::env::set_var("VERTEXIA_API_DOMAIN", value);
+            }
+            if let Some(value) = previous_vertigo {
                 std::env::set_var("VERTIGO_API_DOMAIN", value);
             }
         }
