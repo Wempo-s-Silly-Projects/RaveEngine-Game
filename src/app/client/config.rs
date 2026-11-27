@@ -16,7 +16,7 @@ impl ClientAppConfig {
         let mut ukey = "".to_string();
         let mut connect_token: Option<Vec<u8>> = None;
         let mut launch_code = String::new();
-        let mut api_origin = crate::common::net::api::API_BASE_URL.to_string();
+        let mut api_origin = crate::common::net::api::api_base();
         let mut netcode_key_cli: Option<String> = None;
         let mut protocol_id_cli: Option<u64> = None;
 
