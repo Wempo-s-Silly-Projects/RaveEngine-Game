@@ -6,6 +6,34 @@ pub const API_BASE_URL: &str = "https://vertexia.wempos-forum.com";
 #[derive(Deserialize)]
 struct ClientAuthExchangeResponse {
     access_token: String,
+    token_type: String,
+    token_kind: String,
+    expires_at: i64,
+}
+
+fn parse_client_auth_exchange(body: &str) -> Result<String, String> {
+    let result: ClientAuthExchangeResponse = serde_json::from_str(body)
+        .map_err(|e| format!("invalid client authorization response: {e}"))?;
+    if !result.token_type.eq_ignore_ascii_case("bearer") {
+        return Err("client authorization response did not contain a Bearer token".to_string());
+    }
+    if result.token_kind != "client" {
+        return Err("client authorization endpoint returned an unexpected token scope".to_string());
+    }
+    if !result.access_token.starts_with("vxa_")
+        || result.access_token.len() <= 4
+        || result.access_token.len() > 128
+    {
+        return Err("client authorization response did not contain a valid access token".to_string());
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "system clock is before the Unix epoch".to_string())?
+        .as_secs() as i64;
+    if result.expires_at <= now {
+        return Err("client authorization response contained an expired token".to_string());
+    }
+    Ok(result.access_token)
 }
 
 pub fn exchange_client_code(api_origin: &str, code: &str) -> Result<String, String> {
@@ -33,12 +61,7 @@ pub fn exchange_client_code(api_origin: &str, code: &str) -> Result<String, Stri
     if !status.is_success() {
         return Err(format!("client authorization exchange returned {status}"));
     }
-    let result: ClientAuthExchangeResponse =
-        serde_json::from_str(&body).map_err(|e| format!("invalid client authorization response: {e}"))?;
-    if !result.access_token.starts_with("vxa_") {
-        return Err("client authorization response did not contain a valid access token".to_string());
-    }
-    Ok(result.access_token)
+    parse_client_auth_exchange(&body)
 }
 
 pub fn decode_connect_token(encoded: &str) -> Result<Vec<u8>, String> {
@@ -135,5 +158,41 @@ mod tests {
                 std::env::set_var("VERTIGO_API_DOMAIN", value);
             }
         }
+    }
+
+    #[test]
+    fn client_exchange_accepts_only_unexpired_client_bearer_tokens() {
+        let expires_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() + 60;
+        let body = format!(
+            r#"{{"access_token":"vxa_test-token","token_type":"Bearer","token_kind":"client","expires_at":{expires_at}}}"#
+        );
+        assert_eq!(parse_client_auth_exchange(&body).unwrap(), "vxa_test-token");
+    }
+
+    #[test]
+    fn client_exchange_rejects_studio_scope() {
+        let expires_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() + 60;
+        let body = format!(
+            r#"{{"access_token":"vxa_test-token","token_type":"Bearer","token_kind":"studio","expires_at":{expires_at}}}"#
+        );
+        assert!(parse_client_auth_exchange(&body).is_err());
+    }
+
+    #[test]
+    fn client_exchange_rejects_expired_tokens() {
+        let body = r#"{"access_token":"vxa_test-token","token_type":"Bearer","token_kind":"client","expires_at":1}"#;
+        assert!(parse_client_auth_exchange(body).is_err());
+    }
+
+    #[test]
+    fn client_exchange_rejects_missing_scope_metadata() {
+        let body = r#"{"access_token":"vxa_test-token"}"#;
+        assert!(parse_client_auth_exchange(body).is_err());
     }
 }
