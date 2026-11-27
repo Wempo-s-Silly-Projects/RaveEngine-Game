@@ -20,7 +20,7 @@ impl ClientAppConfig {
         let mut netcode_key_cli: Option<String> = None;
         let mut protocol_id_cli: Option<u64> = None;
 
-        if let Ok(env_ukey) = std::env::var("VERTIGO_CLIENT_UKEY") {
+        if let Ok(env_ukey) = std::env::var("VERTEXIA_CLIENT_TOKEN").or_else(|_| std::env::var("VERTIGO_CLIENT_UKEY")) {
             ukey = env_ukey;
         }
         if let Ok(ip_str) = std::env::var("VERTIGO_SERVER_IP") {
