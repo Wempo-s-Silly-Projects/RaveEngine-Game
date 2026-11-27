@@ -36,7 +36,7 @@ fn parse_client_auth_exchange(body: &str) -> Result<String, String> {
     Ok(result.access_token)
 }
 
-pub fn exchange_client_code(api_origin: &str, code: &str) -> Result<String, String> {
+pub fn validate_api_origin(api_origin: &str) -> Result<String, String> {
     let origin = api_origin.trim().trim_end_matches('/');
     let parsed = reqwest::Url::parse(origin)
         .map_err(|e| format!("invalid VERTEXIA API origin: {e}"))?;
@@ -45,6 +45,19 @@ pub fn exchange_client_code(api_origin: &str, code: &str) -> Result<String, Stri
     if parsed.scheme() != "https" && !local_http {
         return Err("VERTEXIA API origin must use HTTPS outside localhost".to_string());
     }
+    if !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+        || parsed.path() != "/"
+    {
+        return Err("VERTEXIA API URL must be an origin without credentials, path, query, or fragment".to_string());
+    }
+    Ok(origin.to_string())
+}
+
+pub fn exchange_client_code(api_origin: &str, code: &str) -> Result<String, String> {
+    let origin = validate_api_origin(api_origin)?;
     if code.trim().is_empty() {
         return Err("missing one-time client authorization code".to_string());
     }
@@ -118,6 +131,15 @@ pub fn shared_auth_client() -> Result<&'static reqwest::blocking::Client, String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn api_origin_requires_https_except_loopback() {
+        assert!(validate_api_origin("https://vertexia.example").is_ok());
+        assert!(validate_api_origin("http://localhost:8080").is_ok());
+        assert!(validate_api_origin("http://example.com").is_err());
+        assert!(validate_api_origin("https://user:pass@example.com").is_err());
+        assert!(validate_api_origin("https://example.com/path").is_err());
+    }
 
     #[test]
     fn decode_connect_token_requires_exactly_2048_bytes() {
