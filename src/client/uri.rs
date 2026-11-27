@@ -146,6 +146,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parses_backend_connect_ticket_and_auth_code() {
+        let info = parse_client_join_uri(
+            "vertexia-client://play?ip=127.0.0.1&port=5100&connect_token=YWJj&code=one-time&api=https%3A%2F%2Fvertexia.wempos-forum.com&expires_at=1700000000",
+        ).unwrap();
+        assert_eq!(info.port, 5100);
+        assert_eq!(info.connect_token, "YWJj");
+        assert_eq!(info.code, "one-time");
+        assert_eq!(info.api_base, "https://vertexia.wempos-forum.com");
+        assert_eq!(info.expires_at, Some(1700000000));
+        assert!(info.ukey.is_empty());
+    }
+
+    #[test]
+    fn rejects_connect_ticket_without_one_time_code() {
+        assert!(parse_client_join_uri(
+            "vertexia-client://play?ip=127.0.0.1&port=5100&connect_token=YWJj"
+        ).is_none());
+    }
+
+    #[test]
     fn parses_client_play_uri() {
         let info = parse_client_join_uri(
             "vertexia-client://play?ip=127.0.0.1&port=5000&ukey=abc123",
